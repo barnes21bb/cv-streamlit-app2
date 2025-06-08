@@ -4,3 +4,4 @@ numpy
 Pillow
 streamlit-drawable-canvas
 pytest
+ultralytics

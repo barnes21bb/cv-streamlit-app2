@@ -16,6 +16,11 @@ This repository is the starting point for a modular Streamlit-based video annota
 - Per-frame annotation persistence (COCO JSON, PASCAL VOC XML)
 - Model training and export
 - Download/export of annotated data
+- Built-in YOLOv8 detection to pre-populate annotations
+
+During annotation you can run automatic detection using YOLOv8 from the sidebar.
+Adjust the confidence slider before starting detection to control the threshold.
+Detection counts per frame are displayed alongside annotation metrics.
 
 ---
 

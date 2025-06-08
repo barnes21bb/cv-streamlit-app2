@@ -16,6 +16,11 @@ import io
 import zipfile
 from streamlit_drawable_canvas import st_canvas
 
+try:
+    from models.detection import YOLODetector
+except Exception:
+    YOLODetector = None
+
 # Database setup
 def init_database():
     """Initialize SQLite database for users and projects"""
@@ -213,6 +218,16 @@ if 'total_frames' not in st.session_state:
     st.session_state.total_frames = 0
 if 'current_frame_num' not in st.session_state:
     st.session_state.current_frame_num = 0
+if 'detector_conf' not in st.session_state:
+    st.session_state.detector_conf = 0.25
+if 'detector' not in st.session_state:
+    try:
+        from models.detection import YOLODetector
+        st.session_state.detector = YOLODetector(conf=st.session_state.detector_conf)
+    except Exception:
+        st.session_state.detector = None
+if 'detection_counts' not in st.session_state:
+    st.session_state.detection_counts = {}
 
 def load_video(video_path):
     """Load video from path"""
@@ -232,6 +247,7 @@ def load_video(video_path):
     st.session_state.video_path = video_path
     st.session_state.total_frames = total_frames
     st.session_state.current_frame_num = 0
+    st.session_state.detection_counts = {}
 
     return total_frames
 
@@ -360,6 +376,16 @@ def generate_pascal_voc_xml(annotations_dict, video_name, video_shape):
         output[frame_num] = pretty_xml
 
     return output
+
+
+def run_model_detection(video_path, conf):
+    """Run YOLOv8 detection on the entire video."""
+    if st.session_state.detector is None:
+        st.error("YOLOv8 not available. Please install ultralytics.")
+        return {}, {}
+    st.session_state.detector.set_conf(conf)
+    annotations, counts = st.session_state.detector.detect_video(video_path)
+    return annotations, counts
 
 # Streamlit UI
 st.set_page_config(page_title="Video Annotation Tool", layout="wide")
@@ -533,9 +559,34 @@ else:
                 "Current annotation class",
                 st.session_state.classes
             )
-            
+
             st.divider()
-            
+
+            # Detection with YOLOv8
+            st.header("🧠 Run Detection")
+            st.session_state.detector_conf = st.slider(
+                "Detection Confidence",
+                0.0,
+                1.0,
+                st.session_state.detector_conf,
+                step=0.05,
+            )
+            if st.button("Run YOLOv8 Detection"):
+                if st.session_state.video_path:
+                    with st.spinner("Running detection..."):
+                        anns, counts = run_model_detection(
+                            st.session_state.video_path,
+                            st.session_state.detector_conf,
+                        )
+                    st.session_state.annotations = anns
+                    st.session_state.detection_counts = counts
+                    st.success("Detection complete")
+                    st.rerun()
+                else:
+                    st.warning("Load a video first")
+
+            st.divider()
+
             # Export annotations
             st.header("💾 Export Annotations")
             if st.button("Export as PASCAL VOC XML"):
@@ -669,14 +720,17 @@ else:
             st.divider()
             total_annotations = sum(len(anns) for anns in st.session_state.annotations.values())
             annotated_frames = len(st.session_state.annotations)
-            
-            col1, col2, col3 = st.columns(3)
+            current_detections = st.session_state.detection_counts.get(frame_num, 0)
+
+            col1, col2, col3, col4 = st.columns(4)
             with col1:
                 st.metric("Total Annotations", total_annotations)
             with col2:
                 st.metric("Annotated Frames", annotated_frames)
             with col3:
                 st.metric("Remaining Frames", st.session_state.total_frames - annotated_frames)
+            with col4:
+                st.metric("Detections (Frame)", current_detections)
     
     elif st.session_state.current_project_id:
         st.info("👈 Please select a video from the sidebar to begin annotation")
