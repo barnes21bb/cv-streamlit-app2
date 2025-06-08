@@ -3,4 +3,9 @@ opencv-python
 numpy
 Pillow
 streamlit-drawable-canvas
+torch
+torchvision
+torchmetrics
+huggingface_hub
+snowflake-snowpark-python
 pytest
