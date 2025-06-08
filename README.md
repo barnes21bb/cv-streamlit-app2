@@ -15,8 +15,6 @@ This repository is the starting point for a modular Streamlit-based video annota
 - Interactive annotation with bounding boxes
 - Per-frame annotation persistence (COCO JSON, PASCAL VOC XML)
 - Model training and export
-- Integration with Snowflake Snowpark Container Services
-- Upload trained models directly to Hugging Face
 - Download/export of annotated data
 
 ---
