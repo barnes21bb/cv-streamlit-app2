@@ -58,6 +58,19 @@ init_database()
 STORAGE_DIR = Path("annotation_storage")
 STORAGE_DIR.mkdir(exist_ok=True)
 
+# File upload limits (in bytes)
+WARNING_SIZE_BYTES = 200 * 1024 * 1024  # 200 MB
+MAX_SIZE_BYTES = 500 * 1024 * 1024      # 500 MB
+
+def check_file_size(size_bytes):
+    """Return 'reject' if size is over MAX_SIZE_BYTES,
+    'warn' if over WARNING_SIZE_BYTES, else 'ok'."""
+    if size_bytes > MAX_SIZE_BYTES:
+        return "reject"
+    if size_bytes > WARNING_SIZE_BYTES:
+        return "warn"
+    return "ok"
+
 def validate_email(email):
     """Basic email validation"""
     pattern = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
@@ -186,8 +199,8 @@ def get_project_videos(user_id, project_id):
     """Get all videos in a project directory"""
     project_dir = STORAGE_DIR / f"user_{user_id}" / f"project_{project_id}"
     if project_dir.exists():
-        return [f for f in project_dir.iterdir() 
-                if f.suffix.lower() in ['.mp4', '.avi', '.mov', '.mkv']]
+        return [f for f in project_dir.iterdir()
+                if f.suffix.lower() in ['.mp4', '.avi', '.mov', '.mkv', '.m4v', '.3gp']]
     return []
 
 # Initialize session state for user management
@@ -471,16 +484,25 @@ else:
             st.header("📹 Video Management")
             
             # Upload new video
-            video_file = st.file_uploader("Upload new video", type=['mp4', 'avi', 'mov', 'mkv'])
+            video_file = st.file_uploader(
+                "Upload new video",
+                type=['mp4', 'avi', 'mov', 'mkv', 'm4v', '3gp']
+            )
             if video_file is not None:
-                if st.button("Add to Project"):
-                    video_path = save_video_to_project(
-                        st.session_state.user_id,
-                        st.session_state.current_project_id,
-                        video_file
-                    )
-                    st.success(f"Added {video_file.name} to project")
-                    st.rerun()
+                size_status = check_file_size(video_file.size)
+                if size_status == "reject":
+                    st.error("File size exceeds 500 MB limit")
+                else:
+                    if size_status == "warn":
+                        st.warning("Large file (>200 MB) may take time to process")
+                    if st.button("Add to Project"):
+                        video_path = save_video_to_project(
+                            st.session_state.user_id,
+                            st.session_state.current_project_id,
+                            video_file
+                        )
+                        st.success(f"Added {video_file.name} to project")
+                        st.rerun()
             
             # List project videos
             st.subheader("Project Videos")
