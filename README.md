@@ -6,7 +6,8 @@ This repository is the starting point for a modular Streamlit-based video annota
 
 1. Clone this repository and create a Python virtual environment.
 2. Install dependencies (requirements.txt will be provided as development progresses).
-3. Run the Streamlit app (app.py will be added soon).
+3. Run the Streamlit app using `streamlit run video-annotation-app.py`.
+
 
 ## Features (Planned)
 - Multi-user and multi-project management
