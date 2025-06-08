@@ -3,3 +3,4 @@ opencv-python
 numpy
 Pillow
 streamlit-drawable-canvas
+pytest
