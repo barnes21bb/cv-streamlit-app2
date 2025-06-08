@@ -361,6 +361,46 @@ def generate_pascal_voc_xml(annotations_dict, video_name, video_shape):
 
     return output
 
+
+def export_annotated_video(video_path, annotations, output_path):
+    """Write annotated frames to a new video file."""
+    cap = cv2.VideoCapture(video_path)
+    fps = cap.get(cv2.CAP_PROP_FPS)
+    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+
+    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+    writer = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
+
+    frame_num = 0
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            break
+
+        frame_annotations = annotations.get(frame_num, [])
+        if frame_annotations:
+            frame = draw_annotations(frame, frame_annotations)
+
+        writer.write(frame)
+        frame_num += 1
+
+    cap.release()
+    writer.release()
+    return output_path
+
+
+def create_zip_with_video_and_xml(video_path, xml_map):
+    """Return bytes of a ZIP archive containing the video and XML annotations."""
+    zip_buffer = io.BytesIO()
+    with zipfile.ZipFile(zip_buffer, "w") as zipf:
+        zipf.write(video_path, arcname=Path(video_path).name)
+        for frame_num, xml_str in xml_map.items():
+            xml_filename = f"{Path(video_path).stem}_frame_{frame_num}.xml"
+            zipf.writestr(xml_filename, xml_str)
+    zip_buffer.seek(0)
+    return zip_buffer.getvalue()
+
 # Streamlit UI
 st.set_page_config(page_title="Video Annotation Tool", layout="wide")
 
@@ -562,6 +602,35 @@ else:
                                 file_name=f"{video_name}_annotations.zip",
                                 mime="application/zip"
                             )
+                else:
+                    st.warning("No annotations to export!")
+
+            if st.button("Download Annotated Video (+ XML)"):
+                if st.session_state.annotations and st.session_state.video_path:
+                    video_name = Path(st.session_state.video_path).stem
+                    frame = get_frame(st.session_state.video_path, 0)
+                    if frame is not None:
+                        xml_map = generate_pascal_voc_xml(
+                            st.session_state.annotations,
+                            video_name,
+                            frame.shape,
+                        )
+                        with tempfile.TemporaryDirectory() as tmpdir:
+                            annotated_path = Path(tmpdir) / f"{video_name}_annotated.mp4"
+                            export_annotated_video(
+                                st.session_state.video_path,
+                                st.session_state.annotations,
+                                str(annotated_path),
+                            )
+                            zip_bytes = create_zip_with_video_and_xml(
+                                str(annotated_path), xml_map
+                            )
+                        st.download_button(
+                            label="📥 Download Annotated Video ZIP",
+                            data=zip_bytes,
+                            file_name=f"{video_name}_annotated.zip",
+                            mime="application/zip",
+                        )
                 else:
                     st.warning("No annotations to export!")
     
