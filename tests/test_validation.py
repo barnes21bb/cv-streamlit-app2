@@ -1,10 +1,22 @@
-import sys
+import ast
+import re
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT))
 
-from src.utils import validate_email
+def load_validate_email():
+    """Load validate_email function from video-annotation-app.py without executing the whole module."""
+    path = Path(__file__).resolve().parents[1] / "video-annotation-app.py"
+    source = path.read_text()
+    tree = ast.parse(source)
+    for node in tree.body:
+        if isinstance(node, ast.FunctionDef) and node.name == "validate_email":
+            module = {}
+            exec(compile(ast.Module([node], []), filename=str(path), mode="exec"), {"re": re}, module)
+            return module["validate_email"]
+    raise RuntimeError("validate_email function not found")
+
+
+validate_email = load_validate_email()
 
 
 VALID_EMAILS = [

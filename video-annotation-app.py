@@ -1,28 +1,195 @@
 import streamlit as st
+import cv2
+import numpy as np
 from PIL import Image
+import xml.etree.ElementTree as ET
+import os
+import tempfile
+from datetime import datetime
+import json
+import sqlite3
+import shutil
 from pathlib import Path
+import pickle
+import re
 import io
 import zipfile
 from streamlit_drawable_canvas import st_canvas
 from training import train_model, upload_to_huggingface
 
-from src.database import (
-    init_database,
-    get_or_create_user,
-    get_all_users,
-    create_project,
-    get_user_projects,
-    save_video_to_project,
-    save_annotations,
-    load_project_annotations,
-    get_project_videos,
-)
-from src.video_utils import load_video, get_frame
-from src.annotation_utils import draw_annotations, generate_pascal_voc_xml
-from src.utils import validate_email
+# Database setup
+def init_database():
+    """Initialize SQLite database for users and projects"""
+    conn = sqlite3.connect('video_annotation.db')
+    c = conn.cursor()
+    
+    # Users table
+    c.execute('''CREATE TABLE IF NOT EXISTS users
+                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  email TEXT UNIQUE NOT NULL,
+                  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
+    
+    # Projects table
+    c.execute('''CREATE TABLE IF NOT EXISTS projects
+                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  user_id INTEGER NOT NULL,
+                  name TEXT NOT NULL,
+                  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                  FOREIGN KEY (user_id) REFERENCES users(id),
+                  UNIQUE(user_id, name))''')
+    
+    # Annotations table
+    c.execute('''CREATE TABLE IF NOT EXISTS annotations
+                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  project_id INTEGER NOT NULL,
+                  video_name TEXT NOT NULL,
+                  frame_num INTEGER NOT NULL,
+                  annotations_data TEXT NOT NULL,
+                  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                  FOREIGN KEY (project_id) REFERENCES projects(id))''')
+    
+    conn.commit()
+    conn.close()
 
 # Initialize database on startup
 init_database()
+
+# Create directories for file storage
+STORAGE_DIR = Path("annotation_storage")
+STORAGE_DIR.mkdir(exist_ok=True)
+
+def validate_email(email):
+    """Basic email validation"""
+    pattern = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
+    return re.match(pattern, email) is not None
+
+def get_or_create_user(email):
+    """Get user ID or create new user"""
+    conn = sqlite3.connect('video_annotation.db')
+    c = conn.cursor()
+    
+    c.execute("SELECT id FROM users WHERE email = ?", (email,))
+    result = c.fetchone()
+    
+    if result:
+        user_id = result[0]
+    else:
+        c.execute("INSERT INTO users (email) VALUES (?)", (email,))
+        user_id = c.lastrowid
+        conn.commit()
+    
+    conn.close()
+    return user_id
+
+def get_all_users():
+    """Get all registered users"""
+    conn = sqlite3.connect('video_annotation.db')
+    c = conn.cursor()
+    c.execute("SELECT email FROM users ORDER BY email")
+    users = [row[0] for row in c.fetchall()]
+    conn.close()
+    return users
+
+def create_project(user_id, project_name):
+    """Create a new project for user"""
+    conn = sqlite3.connect('video_annotation.db')
+    c = conn.cursor()
+    
+    try:
+        c.execute("INSERT INTO projects (user_id, name) VALUES (?, ?)", 
+                  (user_id, project_name))
+        project_id = c.lastrowid
+        conn.commit()
+        
+        # Create project directory
+        project_dir = STORAGE_DIR / f"user_{user_id}" / f"project_{project_id}"
+        project_dir.mkdir(parents=True, exist_ok=True)
+        
+        return project_id
+    except sqlite3.IntegrityError:
+        return None
+    finally:
+        conn.close()
+
+def get_user_projects(user_id):
+    """Get all projects for a user"""
+    conn = sqlite3.connect('video_annotation.db')
+    c = conn.cursor()
+    c.execute("""SELECT id, name, created_at, updated_at 
+                 FROM projects 
+                 WHERE user_id = ? 
+                 ORDER BY updated_at DESC""", (user_id,))
+    projects = c.fetchall()
+    conn.close()
+    return projects
+
+def save_video_to_project(user_id, project_id, video_file):
+    """Save video file to project directory"""
+    project_dir = STORAGE_DIR / f"user_{user_id}" / f"project_{project_id}"
+    video_path = project_dir / video_file.name
+    
+    with open(video_path, "wb") as f:
+        f.write(video_file.getbuffer())
+    
+    return str(video_path)
+
+def save_annotations(project_id, video_name, frame_num, annotations):
+    """Save annotations to database"""
+    conn = sqlite3.connect('video_annotation.db')
+    c = conn.cursor()
+    
+    # Check if annotation exists
+    c.execute("""SELECT id FROM annotations 
+                 WHERE project_id = ? AND video_name = ? AND frame_num = ?""",
+              (project_id, video_name, frame_num))
+    result = c.fetchone()
+    
+    annotations_json = json.dumps(annotations)
+    
+    if result:
+        # Update existing
+        c.execute("""UPDATE annotations 
+                     SET annotations_data = ? 
+                     WHERE id = ?""",
+                  (annotations_json, result[0]))
+    else:
+        # Insert new
+        c.execute("""INSERT INTO annotations 
+                     (project_id, video_name, frame_num, annotations_data) 
+                     VALUES (?, ?, ?, ?)""",
+                  (project_id, video_name, frame_num, annotations_json))
+    
+    # Update project timestamp
+    c.execute("UPDATE projects SET updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+              (project_id,))
+    
+    conn.commit()
+    conn.close()
+
+def load_project_annotations(project_id, video_name):
+    """Load all annotations for a video in a project"""
+    conn = sqlite3.connect('video_annotation.db')
+    c = conn.cursor()
+    c.execute("""SELECT frame_num, annotations_data 
+                 FROM annotations 
+                 WHERE project_id = ? AND video_name = ?""",
+              (project_id, video_name))
+    
+    annotations = {}
+    for frame_num, data in c.fetchall():
+        annotations[frame_num] = json.loads(data)
+    
+    conn.close()
+    return annotations
+
+def get_project_videos(user_id, project_id):
+    """Get all videos in a project directory"""
+    project_dir = STORAGE_DIR / f"user_{user_id}" / f"project_{project_id}"
+    if project_dir.exists():
+        return [f for f in project_dir.iterdir() 
+                if f.suffix.lower() in ['.mp4', '.avi', '.mov', '.mkv']]
+    return []
 
 # Initialize session state for user management
 if 'user_id' not in st.session_state:
@@ -50,6 +217,152 @@ if 'current_frame_num' not in st.session_state:
 if 'training_metrics' not in st.session_state:
     st.session_state.training_metrics = []
 
+def load_video(video_path):
+    """Load video from path"""
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        st.error("Failed to open video file")
+        cap.release()
+        return 0
+
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    cap.release()
+
+    if total_frames <= 0:
+        st.error("Video contains no frames")
+        return 0
+
+    st.session_state.video_path = video_path
+    st.session_state.total_frames = total_frames
+    st.session_state.current_frame_num = 0
+
+    return total_frames
+
+def get_frame(video_path, frame_number):
+    """Extract specific frame from video"""
+    cap = cv2.VideoCapture(video_path)
+    cap.set(cv2.CAP_PROP_POS_FRAMES, frame_number)
+    ret, frame = cap.read()
+    cap.release()
+    
+    if ret:
+        frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        return frame
+    return None
+
+def draw_annotations(image, annotations):
+    """Draw bounding boxes on image"""
+    img_with_boxes = image.copy()
+    
+    colors = {
+        'good-cup': (0, 255, 0),
+        'bad-cup': (255, 0, 0),
+        'no-cup': (255, 255, 0)
+    }
+    
+    for ann in annotations:
+        x1, y1, x2, y2 = ann['bbox']
+        class_name = ann['class']
+        color = colors.get(class_name, (0, 0, 255))
+        
+        cv2.rectangle(img_with_boxes, (x1, y1), (x2, y2), color, 2)
+        
+        label = f"{class_name}"
+        font = cv2.FONT_HERSHEY_SIMPLEX
+        font_scale = 0.5
+        thickness = 1
+        (text_width, text_height), _ = cv2.getTextSize(label, font, font_scale, thickness)
+        cv2.rectangle(img_with_boxes, (x1, y1 - text_height - 4), (x1 + text_width + 4, y1), color, -1)
+        cv2.putText(img_with_boxes, label, (x1 + 2, y1 - 2), font, font_scale, (255, 255, 255), thickness)
+    
+    return img_with_boxes
+
+def generate_pascal_voc_xml(annotations_dict, video_name, video_shape):
+    """Return PASCAL VOC XML strings per frame.
+
+    Parameters
+    ----------
+    annotations_dict : dict
+        Mapping of frame number to a list of annotations.
+    video_name : str
+        Base name of the annotated video.
+    video_shape : tuple
+        (height, width, channels) of the video frame.
+
+    Returns
+    -------
+    dict
+        Dictionary mapping frame numbers to XML strings, each containing
+        a single ``<annotation>`` root element.
+    """
+
+    output = {}
+    h, w, c = video_shape
+
+    for frame_num, frame_annotations in annotations_dict.items():
+        if not frame_annotations:
+            continue
+
+        annotation = ET.Element("annotation")
+
+        folder = ET.SubElement(annotation, "folder")
+        folder.text = "frames"
+
+        filename = ET.SubElement(annotation, "filename")
+        filename.text = f"{video_name}_frame_{frame_num}.jpg"
+
+        source = ET.SubElement(annotation, "source")
+        database = ET.SubElement(source, "database")
+        database.text = "Custom Video Annotation"
+
+        size = ET.SubElement(annotation, "size")
+        width = ET.SubElement(size, "width")
+        width.text = str(w)
+        height = ET.SubElement(size, "height")
+        height.text = str(h)
+        depth = ET.SubElement(size, "depth")
+        depth.text = str(c)
+
+        segmented = ET.SubElement(annotation, "segmented")
+        segmented.text = "0"
+
+        for ann in frame_annotations:
+            obj = ET.SubElement(annotation, "object")
+
+            name = ET.SubElement(obj, "name")
+            name.text = ann['class']
+
+            pose = ET.SubElement(obj, "pose")
+            pose.text = "Unspecified"
+
+            truncated = ET.SubElement(obj, "truncated")
+            truncated.text = "0"
+
+            difficult = ET.SubElement(obj, "difficult")
+            difficult.text = "0"
+
+            bndbox = ET.SubElement(obj, "bndbox")
+            xmin = ET.SubElement(bndbox, "xmin")
+            xmin.text = str(ann['bbox'][0])
+            ymin = ET.SubElement(bndbox, "ymin")
+            ymin.text = str(ann['bbox'][1])
+            xmax = ET.SubElement(bndbox, "xmax")
+            xmax.text = str(ann['bbox'][2])
+            ymax = ET.SubElement(bndbox, "ymax")
+            ymax.text = str(ann['bbox'][3])
+
+        from xml.dom import minidom
+        rough_string = ET.tostring(annotation, 'utf-8')
+        reparsed = minidom.parseString(rough_string)
+        pretty_xml = reparsed.toprettyxml(indent="  ")
+
+        lines = pretty_xml.split('\n')
+        non_empty_lines = [line for line in lines if line.strip()]
+        pretty_xml = '\n'.join(non_empty_lines)
+
+        output[frame_num] = pretty_xml
+
+    return output
 
 # Streamlit UI
 st.set_page_config(page_title="Video Annotation Tool", layout="wide")
