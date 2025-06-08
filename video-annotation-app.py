@@ -12,6 +12,8 @@ import shutil
 from pathlib import Path
 import pickle
 import re
+import io
+import zipfile
 from streamlit_drawable_canvas import st_canvas
 
 # Database setup
@@ -273,27 +275,43 @@ def draw_annotations(image, annotations):
     return img_with_boxes
 
 def generate_pascal_voc_xml(annotations_dict, video_name, video_shape):
-    """Generate PASCAL VOC format XML"""
-    root = ET.Element("annotations")
-    root.set("version", "1.0")
-    
+    """Return PASCAL VOC XML strings per frame.
+
+    Parameters
+    ----------
+    annotations_dict : dict
+        Mapping of frame number to a list of annotations.
+    video_name : str
+        Base name of the annotated video.
+    video_shape : tuple
+        (height, width, channels) of the video frame.
+
+    Returns
+    -------
+    dict
+        Dictionary mapping frame numbers to XML strings, each containing
+        a single ``<annotation>`` root element.
+    """
+
+    output = {}
+    h, w, c = video_shape
+
     for frame_num, frame_annotations in annotations_dict.items():
         if not frame_annotations:
             continue
-            
-        annotation = ET.SubElement(root, "annotation")
-        
+
+        annotation = ET.Element("annotation")
+
         folder = ET.SubElement(annotation, "folder")
         folder.text = "frames"
-        
+
         filename = ET.SubElement(annotation, "filename")
         filename.text = f"{video_name}_frame_{frame_num}.jpg"
-        
+
         source = ET.SubElement(annotation, "source")
         database = ET.SubElement(source, "database")
         database.text = "Custom Video Annotation"
-        
-        h, w, c = video_shape
+
         size = ET.SubElement(annotation, "size")
         width = ET.SubElement(size, "width")
         width.text = str(w)
@@ -301,25 +319,25 @@ def generate_pascal_voc_xml(annotations_dict, video_name, video_shape):
         height.text = str(h)
         depth = ET.SubElement(size, "depth")
         depth.text = str(c)
-        
+
         segmented = ET.SubElement(annotation, "segmented")
         segmented.text = "0"
-        
+
         for ann in frame_annotations:
             obj = ET.SubElement(annotation, "object")
-            
+
             name = ET.SubElement(obj, "name")
             name.text = ann['class']
-            
+
             pose = ET.SubElement(obj, "pose")
             pose.text = "Unspecified"
-            
+
             truncated = ET.SubElement(obj, "truncated")
             truncated.text = "0"
-            
+
             difficult = ET.SubElement(obj, "difficult")
             difficult.text = "0"
-            
+
             bndbox = ET.SubElement(obj, "bndbox")
             xmin = ET.SubElement(bndbox, "xmin")
             xmin.text = str(ann['bbox'][0])
@@ -329,17 +347,19 @@ def generate_pascal_voc_xml(annotations_dict, video_name, video_shape):
             xmax.text = str(ann['bbox'][2])
             ymax = ET.SubElement(bndbox, "ymax")
             ymax.text = str(ann['bbox'][3])
-    
-    from xml.dom import minidom
-    rough_string = ET.tostring(root, 'utf-8')
-    reparsed = minidom.parseString(rough_string)
-    pretty_xml = reparsed.toprettyxml(indent="  ")
-    
-    lines = pretty_xml.split('\n')
-    non_empty_lines = [line for line in lines if line.strip()]
-    pretty_xml = '\n'.join(non_empty_lines)
-    
-    return pretty_xml
+
+        from xml.dom import minidom
+        rough_string = ET.tostring(annotation, 'utf-8')
+        reparsed = minidom.parseString(rough_string)
+        pretty_xml = reparsed.toprettyxml(indent="  ")
+
+        lines = pretty_xml.split('\n')
+        non_empty_lines = [line for line in lines if line.strip()]
+        pretty_xml = '\n'.join(non_empty_lines)
+
+        output[frame_num] = pretty_xml
+
+    return output
 
 # Streamlit UI
 st.set_page_config(page_title="Video Annotation Tool", layout="wide")
@@ -523,18 +543,25 @@ else:
                     video_name = Path(st.session_state.video_path).stem
                     frame = get_frame(st.session_state.video_path, 0)
                     if frame is not None:
-                        xml_content = generate_pascal_voc_xml(
+                        xml_map = generate_pascal_voc_xml(
                             st.session_state.annotations,
                             video_name,
                             frame.shape
                         )
-                        
-                        st.download_button(
-                            label="📥 Download XML",
-                            data=xml_content,
-                            file_name=f"{video_name}_annotations.xml",
-                            mime="text/xml"
-                        )
+                        if xml_map:
+                            zip_buffer = io.BytesIO()
+                            with zipfile.ZipFile(zip_buffer, 'w') as zipf:
+                                for frame_num, xml_str in xml_map.items():
+                                    xml_filename = f"{video_name}_frame_{frame_num}.xml"
+                                    zipf.writestr(xml_filename, xml_str)
+                            zip_buffer.seek(0)
+
+                            st.download_button(
+                                label="📥 Download XML ZIP",
+                                data=zip_buffer.getvalue(),
+                                file_name=f"{video_name}_annotations.zip",
+                                mime="application/zip"
+                            )
                 else:
                     st.warning("No annotations to export!")
     
