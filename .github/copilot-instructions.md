@@ -1,0 +1,3 @@
+<!-- Use this file to provide workspace-specific custom instructions to Copilot. For more details, visit https://code.visualstudio.com/docs/copilot/copilot-customization#_use-a-githubcopilotinstructionsmd-file -->
+
+This project is a modular Streamlit application for computer vision video annotation and model training. Prioritize code clarity, modularity, and production-level documentation. Use best practices for Streamlit, OpenCV, and PyTorch integration. All user data and uploads must be persistently organized per user. Annotation tools should support COCO JSON and PASCAL VOC XML export. Model training should be compatible with modern deployment workflows.
