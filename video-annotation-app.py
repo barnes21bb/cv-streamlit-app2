@@ -15,6 +15,7 @@ import re
 import io
 import zipfile
 from streamlit_drawable_canvas import st_canvas
+from training import train_model, upload_to_huggingface
 
 # Database setup
 def init_database():
@@ -213,6 +214,8 @@ if 'total_frames' not in st.session_state:
     st.session_state.total_frames = 0
 if 'current_frame_num' not in st.session_state:
     st.session_state.current_frame_num = 0
+if 'training_metrics' not in st.session_state:
+    st.session_state.training_metrics = []
 
 def load_video(video_path):
     """Load video from path"""
@@ -564,6 +567,43 @@ else:
                             )
                 else:
                     st.warning("No annotations to export!")
+
+            st.divider()
+            st.header("📈 Model Training")
+            dataset_dir = st.text_input("Dataset directory")
+            ann_format = st.selectbox("Annotation format", ["voc", "coco"])
+            epochs = st.number_input("Epochs", min_value=1, value=1, step=1)
+            if st.button("Start Training"):
+                def metrics_cb(epoch, metrics):
+                    st.session_state.training_metrics.append({"epoch": epoch, **metrics})
+                with st.spinner("Training model..."):
+                    model_path = train_model(
+                        dataset_dir,
+                        ann_format,
+                        len(st.session_state.classes) + 1,
+                        int(epochs),
+                        metrics_callback=metrics_cb,
+                    )
+                    st.session_state.trained_model_path = str(model_path)
+                    st.success("Training completed")
+
+            if st.session_state.training_metrics:
+                for m in st.session_state.training_metrics:
+                    st.write(f"Epoch {m['epoch']}: mAP={m.get('map', 0):.4f}")
+
+            st.divider()
+            st.header("🚀 Upload Model to Hugging Face")
+            if st.session_state.get("trained_model_path"):
+                repo_id = st.text_input("Repo ID (user/repo)")
+                token = st.text_input("Token", type="password")
+                if st.button("Upload to Hugging Face"):
+                    try:
+                        upload_to_huggingface(st.session_state.trained_model_path, repo_id, token)
+                        st.success("Upload successful")
+                    except Exception as e:
+                        st.error(f"Upload failed: {e}")
+            else:
+                st.info("Train a model first to upload")
     
     # Main content area
     if st.session_state.current_project_id is None:
