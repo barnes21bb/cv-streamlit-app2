@@ -171,6 +171,9 @@ def get_project_videos(user_id, project_id):
     """Get all videos in a project directory"""
     project_dir = STORAGE_DIR / f"user_{user_id}" / f"project_{project_id}"
     if project_dir.exists():
-        return [f for f in project_dir.iterdir()
-                if f.suffix.lower() in ['.mp4', '.avi', '.mov', '.mkv']]
+        return [
+            f
+            for f in project_dir.iterdir()
+            if f.suffix.lower() in ['.mp4', '.avi', '.mov', '.mkv', '.m4v', '.3gp']
+        ]
     return []
