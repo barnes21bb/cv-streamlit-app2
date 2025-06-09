@@ -342,65 +342,111 @@ else:
             # --- Interactive bounding box annotation ---
             st.subheader("Draw Bounding Boxes (Interactive)")
             pil_img = Image.fromarray(current_frame)
-            canvas_height, canvas_width = pil_img.height, pil_img.width
-            frame_annotations = st.session_state.annotations.get(frame_num, [])
-            # Prepare initial rectangles for st_canvas
+            # Ensure canvas dimensions are integers
+            canvas_height = int(pil_img.height)
+            canvas_width = int(pil_img.width)
+            
+            # Get the saved annotations for this frame to setup initial_drawing
+            # This represents the state before the current interaction.
+            saved_annotations_for_this_frame = st.session_state.annotations.get(frame_num, [])
+
+            # Prepare initial_rects for st_canvas from the saved annotations
             initial_rects = []
-            for ann in frame_annotations:
+            for ann in saved_annotations_for_this_frame:
                 x1, y1, x2, y2 = ann['bbox']
                 initial_rects.append({
                     "type": "rect",
-                    "left": x1,
-                    "top": y1,
-                    "width": x2 - x1,
-                    "height": y2 - y1,
-                    "stroke": "#000000",
+                    "left": x1, "top": y1,
+                    "width": x2 - x1, "height": y2 - y1,
+                    "stroke": "#000000", 
                     "fill": "rgba(255, 165, 0, 0.3)",
-                    "name": ann['class']
                 })
+            
+            # Generate a dynamic key for the canvas. This key changes if the number of 
+            # annotations for the frame changes, forcing a re-creation of the canvas component.
+            # This helps prevent state issues within the canvas component during rapid updates.
+            canvas_key = f"canvas_{frame_num}_{len(saved_annotations_for_this_frame)}"
+
+            # This list is a working copy for the current interaction cycle.
+            # It starts with the saved annotations and will be updated based on canvas output and selectboxes.
+            current_annotations_for_frame_being_edited = list(saved_annotations_for_this_frame)
+            
             canvas_result = st_canvas(
                 fill_color="rgba(255, 165, 0, 0.3)",
                 stroke_width=2,
                 stroke_color="#000000",
                 background_image=pil_img,
-                drawing_mode="rect",
-                update_streamlit=True,
+                drawing_mode="rect", # Only allows drawing new rectangles
+                update_streamlit=True, # Reruns on drawing
                 height=canvas_height,
                 width=canvas_width,
-                key=f"canvas_{frame_num}",
-                initial_drawing={"version": "4.4.0", "objects": initial_rects, "background": {}}
+                key=canvas_key, # Use the dynamic key
+                initial_drawing={"version": "4.4.0", "objects": initial_rects} if initial_rects else None
             )
-            # Parse rectangles from canvas
-            new_annotations = []
+            
+            # This list will hold the annotations derived from the current canvas state + selectbox choices
+            processed_annotations_from_this_interaction = [] 
+            
             if canvas_result.json_data is not None and "objects" in canvas_result.json_data:
-                for i, obj in enumerate(canvas_result.json_data["objects"]):
-                    if obj["type"] == "rect":
-                        x1 = int(obj["left"])
-                        y1 = int(obj["top"])
-                        x2 = int(obj["left"] + obj["width"])
-                        y2 = int(obj["top"] + obj["height"])
-                        # Assign class per box (default to current_class, or use previous if available)
+                canvas_drawn_objects = canvas_result.json_data["objects"]
+                num_canvas_objects = len(canvas_drawn_objects)
+
+                # Adjust our working list of annotations to match the number of objects on canvas
+                # Add new placeholder annotations if new boxes were drawn
+                while len(current_annotations_for_frame_being_edited) < num_canvas_objects:
+                    current_annotations_for_frame_being_edited.append({
+                        'class': st.session_state.current_class, # Default for a brand new box
+                        'bbox': [0,0,0,0] # Placeholder, will be updated from canvas obj
+                    })
+
+                # Remove annotations if somehow canvas has fewer objects (e.g., undo if supported, or error)
+                # This is less likely in "rect" mode without explicit delete actions.
+                if num_canvas_objects < len(current_annotations_for_frame_being_edited):
+                    current_annotations_for_frame_being_edited = current_annotations_for_frame_being_edited[:num_canvas_objects]
+
+                for i, obj_from_canvas in enumerate(canvas_drawn_objects):
+                    if obj_from_canvas["type"] == "rect":
+                        x1 = int(obj_from_canvas["left"])
+                        y1 = int(obj_from_canvas["top"])
+                        x2 = int(obj_from_canvas["left"] + obj_from_canvas["width"])
+                        y2 = int(obj_from_canvas["top"] + obj_from_canvas["height"])
+                        current_bbox_from_canvas = [x1, y1, x2, y2]
+
+                        # Get the class for this box. Default to its existing saved class.
+                        # current_annotations_for_frame_being_edited is now synced in length with canvas_drawn_objects
+                        class_for_selectbox_default = current_annotations_for_frame_being_edited[i]['class']
+                        
+                        # Update bbox in our working list
+                        current_annotations_for_frame_being_edited[i]['bbox'] = current_bbox_from_canvas
+                        
+                        # Selectbox for class
                         label_key = f"label_{frame_num}_{i}"
-                        default_class = obj.get("name", st.session_state.current_class)
-                        box_class = st.selectbox(
+                        chosen_class_for_this_box = st.selectbox(
                             f"Class for Box {i+1}",
                             st.session_state.classes,
-                            index=st.session_state.classes.index(default_class) if default_class in st.session_state.classes else 0,
+                            index=st.session_state.classes.index(class_for_selectbox_default) \
+                                if class_for_selectbox_default in st.session_state.classes else 0,
                             key=label_key
                         )
-                        new_annotations.append({
-                            'class': box_class,
-                            'bbox': [x1, y1, x2, y2]
-                        })
-            # Save annotations if changed
-            if new_annotations != frame_annotations:
-                st.session_state.annotations[frame_num] = new_annotations
+                        
+                        # Update class in our working list
+                        current_annotations_for_frame_being_edited[i]['class'] = chosen_class_for_this_box
+                
+                processed_annotations_from_this_interaction = current_annotations_for_frame_being_edited
+            
+            # Compare the fully processed annotations with what's currently in session_state for this frame.
+            # This determines if a save operation is truly needed.
+            if st.session_state.annotations.get(frame_num, []) != processed_annotations_from_this_interaction:
+                st.session_state.annotations[frame_num] = processed_annotations_from_this_interaction
                 save_annotations(
                     st.session_state.current_project_id,
                     video_name,
                     frame_num,
-                    new_annotations
+                    processed_annotations_from_this_interaction
                 )
+                # A rerun will happen naturally due to state change or widget interaction.
+                # No explicit st.rerun() here unless absolutely necessary.
+
             # Clear all boxes button
             if st.button("Clear All Boxes", key=f"clear_{frame_num}"):
                 st.session_state.annotations[frame_num] = []
